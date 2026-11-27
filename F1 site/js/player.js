@@ -2,18 +2,24 @@ import { CONFIG } from './config.js';
 
 export class Player {
   constructor() {
+    this.livery = { body: '#d91e18', wing: '#b01510', accent: '#ffcc00' };
     this.reset();
+  }
+
+  setLivery(livery) {
+    this.livery = livery;
   }
 
   reset() {
     this.position = 0;
-    this.x = -0.42; // Larga na 8ª posição do grid (lado esquerdo)
+    this.x = -0.42;
     this.speed = 0;
+    this.lateralVelocity = 0;
+    this.shakeTimer = 0;
     this.steerDirection = 0;
     this.isBraking = false;
     this.isAccelerating = false;
-    this.lateralVelocity = 0; // Velocidade lateral para rebote de colisão
-    this.shakeTimer = 0; // Timer para tremer o carro ao bater
+    this.inSlipstream = false;
 
     // Telemetria
     this.kmh = 0;
@@ -22,17 +28,19 @@ export class Player {
 
     // Semáforo de Largada F1
     this.startTimer = 0;
-    this.lightsCount = 1; // 1 a 5 luzes acesas; 0 = apagadas (largada!)
+    this.lightsCount = 1;
+    this.lastBeepLight = 0;
     this.raceStarted = false;
     this.goBannerTimer = 0;
 
-    // Sistema de Corrida (3 Voltas)
+    // Corrida (3 Voltas)
     this.lap = 1;
     this.totalLaps = 3;
     this.currentLapTime = 0;
     this.totalRaceTime = 0;
     this.bestLapTime = null;
     this.raceFinished = false;
+    this.finalRank = null;
 
     // Pneus e Pit Lane
     this.tireWear = 100;
@@ -41,11 +49,8 @@ export class Player {
     this.pitStatusText = '';
   }
 
-  update(dt, keys, track) {
+  update(dt, keys, track, rivals = null, audio = null) {
     if (this.raceFinished) {
-        this.x += this.lateralVelocity * dt;
-        this.lateralVelocity *= Math.pow(0.04, dt);
-      if (this.shakeTimer > 0) this.shakeTimer -= dt;
       this.speed = Math.max(0, this.speed - CONFIG.DECEL * dt);
       this.position = (this.position + this.speed * dt) % track.totalLength;
       this.updateTelemetry(this.speed / CONFIG.MAX_SPEED);
@@ -57,18 +62,22 @@ export class Player {
     const turnLeft = Boolean(keys.ArrowLeft || keys.KeyA);
     const turnRight = Boolean(keys.ArrowRight || keys.KeyD);
 
-    // Sequência do Semáforo de Largada (5 luzes acendem a cada 0.8s, depois apagam)
+    // Sequência do Semáforo com bipes sincronizados
     if (!this.raceStarted) {
       this.startTimer += dt;
       if (this.startTimer < 4.0) {
         this.lightsCount = Math.min(5, Math.floor(this.startTimer / 0.8) + 1);
+        if (this.lightsCount > this.lastBeepLight) {
+          this.lastBeepLight = this.lightsCount;
+          if (audio) audio.playStartBeep(false);
+        }
       } else {
         this.lightsCount = 0;
         this.raceStarted = true;
         this.goBannerTimer = 1.2;
+        if (audio) audio.playStartBeep(true);
       }
 
-      // Permite acelerar o motor parado no grid (sobe o RPM sem andar!)
       this.speed = 0;
       this.rpmRatio = this.isAccelerating
         ? Math.min(1, this.rpmRatio + 1.8 * dt)
@@ -85,10 +94,27 @@ export class Player {
     this.totalRaceTime += dt;
 
     const currentSegment = track.findSegment(this.position);
-    const inPitLane = Boolean(currentSegment.hasPit && this.x <= -1.22 && this.x >= -1.98);
+    const pitSide = currentSegment.pitSide ?? -1;
+    const inPitLane = Boolean(
+      currentSegment.hasPit &&
+      ((pitSide < 0 && this.x <= -1.20 && this.x >= -2.42) ||
+       (pitSide > 0 && this.x >= 1.20 && this.x <= 2.42))
+    );
     const isOffroad = !inPitLane && Math.abs(this.x) > 1.05;
 
-    // 1. Parada no Box (Pit Stop) ou Aceleração/Freio normal
+    // Verifica Vácuo (Slipstream) atrás de algum rival
+    this.inSlipstream = false;
+    if (rivals && this.speed > CONFIG.MAX_SPEED * 0.55 && !inPitLane) {
+      for (const car of rivals.cars) {
+        const dz = rivals.getRelativeZ(car.z, this.position, track.totalLength);
+        if (dz > 260 && dz < 1650 && Math.abs(car.x - this.x) < 0.30) {
+          this.inSlipstream = true;
+          break;
+        }
+      }
+    }
+
+    // 1. Pit Stop ou Aceleração/Freio
     if (this.pitTimer > 0) {
       this.speed = 0;
       this.pitTimer -= dt;
@@ -100,48 +126,69 @@ export class Player {
     } else {
       if (this.goBannerTimer > 0) {
         this.pitStatusText = 'LARGADA! ACELERE!';
+      } else if (inPitLane) {
+        this.pitStatusText = 'PIT LIMITER 80 KM/H';
+      } else if (this.inSlipstream) {
+        this.pitStatusText = 'VÁCUO ATIVO! (+22 KM/H)';
       } else {
-        this.pitStatusText = inPitLane ? 'PIT LIMITER 80 KM/H' : '';
+        this.pitStatusText = '';
       }
 
+      const accelBoost = this.inSlipstream ? 1.25 : 1.0;
+      const brakePower = Math.abs(CONFIG.BRAKING || 14500);
+      const pitLimitSpeed = ((80 / (CONFIG.MAX_KMH || 360)) * CONFIG.MAX_SPEED);
+
       if (this.isAccelerating) {
-        this.speed += CONFIG.ACCEL * dt;
+        // Dentro do box, não deixa acelerar além de 80 km/h
+        if (!inPitLane || this.speed < pitLimitSpeed) {
+          this.speed += CONFIG.ACCEL * accelBoost * dt;
+        }
       } else if (this.isBraking) {
-        this.speed -= CONFIG.BRAKING * dt;
+        this.speed -= brakePower * dt;
       } else {
         this.speed -= CONFIG.DECEL * dt;
       }
     }
 
-    // 2. Limitador do Pit Lane (80 km/h) ou lentidão na grama
-    const pitLimitSpeed = (80 / 280) * CONFIG.MAX_SPEED;
-    if (inPitLane && this.speed > pitLimitSpeed) {
-      this.speed -= CONFIG.BRAKING * dt;
+    // 2. Limites de velocidade (Pit, Grama ou Vácuo)
+    const effectiveMaxSpeed = this.inSlipstream ? CONFIG.MAX_SPEED * 1.08 : CONFIG.MAX_SPEED;
+    const pitLimitSpeed = ((80 / (CONFIG.MAX_KMH || 360)) * CONFIG.MAX_SPEED);
+    const brakePower = Math.abs(CONFIG.BRAKING || 14500);
+
+    if (inPitLane) {
+      if (this.speed > pitLimitSpeed) {
+        // Freia forte ao entrar rápido no pit e crava em 80 km/h quando atingir o limite
+        this.speed = Math.max(pitLimitSpeed, this.speed - brakePower * 1.6 * dt);
+      }
     } else if (isOffroad && this.speed > CONFIG.OFFROAD_LIMIT) {
       this.speed -= CONFIG.OFFROAD_DECEL * dt;
     }
 
-    // Dispara o Pit Stop ao reduzir sobre a marca amarela do Box
+    // Dispara Pit Stop + som da chave pneumática
     if (inPitLane && currentSegment.isPitBox && this.speed < 1400 && this.tireWear < 95 && !this.pitDoneThisLap) {
       this.pitTimer = 2.5;
       this.pitDoneThisLap = true;
+      if (audio) audio.playPitDrill();
     }
 
-    this.speed = Math.max(0, Math.min(CONFIG.MAX_SPEED, this.speed));
+    this.speed = Math.max(0, Math.min(effectiveMaxSpeed, this.speed));
 
-    // 3. Avança na pista e verifica cruzamento da linha de chegada
+    // 3. Avança na pista e calcula posição final ANTES de zerar position
     this.position += this.speed * dt;
     if (this.position >= track.totalLength) {
+      if (this.lap >= this.totalLaps && rivals) {
+        this.finalRank = rivals.getPlayerRank(this, track);
+      }
+      this.completeLap(audio);
       this.position -= track.totalLength;
-      this.completeLap();
     }
 
-    // 4. Desgaste gradual dos pneus
-    const speedRatio = this.speed / CONFIG.MAX_SPEED;
-    const wearMultiplier = isOffroad ? 2.5 : 1.1;
+    // 4. Desgaste gradual dos pneus (~25% por volta limpa = dura a corrida toda de 3 voltas)
+    const speedRatio = Math.min(1, this.speed / CONFIG.MAX_SPEED);
+    const wearMultiplier = isOffroad ? 1.15 : 0.34;
     this.tireWear = Math.max(15, this.tireWear - speedRatio * wearMultiplier * dt);
 
-    // 5. Direção e Força Centrífuga
+    // 5. Direção, Força Centrífuga e Rebote Lateral
     const gripFactor = 0.65 + (this.tireWear / 100) * 0.35;
     this.steerDirection = 0;
 
@@ -157,12 +204,16 @@ export class Player {
     }
 
     this.x -= (currentSegment.curve * speedRatio * CONFIG.CENTRIFUGAL / gripFactor) * dt;
-    this.x = Math.max(-2.1, Math.min(2.1, this.x));
+    this.x += this.lateralVelocity * dt;
+    this.lateralVelocity *= Math.pow(0.04, dt);
 
-    this.updateTelemetry(speedRatio);
+    const maxLat = inPitLane ? 2.35 : 2.1;
+    this.x = Math.max(-maxLat, Math.min(maxLat, this.x));
+
+    this.updateTelemetry(this.speed / CONFIG.MAX_SPEED);
   }
 
-  completeLap() {
+  completeLap(audio = null) {
     if (this.bestLapTime === null || this.currentLapTime < this.bestLapTime) {
       this.bestLapTime = this.currentLapTime;
     }
@@ -171,14 +222,16 @@ export class Player {
 
     if (this.lap >= this.totalLaps) {
       this.raceFinished = true;
+      if (audio) audio.playVictoryFanfare();
     } else {
       this.lap += 1;
       this.currentLapTime = 0;
     }
   }
 
-  updateTelemetry(speedRatio) {
-    this.kmh = Math.floor(speedRatio * 280);
+  updateTelemetry(rawSpeedRatio) {
+    const maxKmh = CONFIG.MAX_KMH || 360;
+    this.kmh = Math.round(rawSpeedRatio * maxKmh);
 
     if (this.speed === 0) {
       this.gear = 1;
@@ -186,10 +239,11 @@ export class Player {
       return;
     }
 
+    const clampedRatio = Math.min(0.999, rawSpeedRatio);
     const totalGears = CONFIG.TOTAL_GEARS;
-    this.gear = Math.min(totalGears, Math.floor(speedRatio * totalGears) + 1);
+    this.gear = Math.min(totalGears, Math.floor(clampedRatio * totalGears) + 1);
 
     const gearSpan = 1 / totalGears;
-    this.rpmRatio = Math.min(1, (speedRatio % gearSpan) / gearSpan);
+    this.rpmRatio = Math.min(1, (clampedRatio % gearSpan) / gearSpan);
   }
 }

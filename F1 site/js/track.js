@@ -1,41 +1,146 @@
 import { CONFIG } from './config.js';
-
-const COLORS = {
-  LIGHT: { road: '#555555', grass: '#109910', rumble: '#cc0000', lane: '#ffffff' },
-  DARK:  { road: '#4d4d4d', grass: '#0c820c', rumble: '#ffffff', lane: '' },
-  START: { road: '#ffffff', grass: '#109910', rumble: '#ffffff', lane: '' }
-};
+import { CHAMPIONSHIP_TRACKS } from './tracks-data.js';
 
 export class Track {
-  constructor() {
+  constructor(trackId = 'monaco') {
     this.segments = [];
-    this.buildInterlagos();
+    this.mapPoints = [];
+    this.loadTrack(trackId);
+  }
+
+  loadTrack(trackId) {
+    const def = CHAMPIONSHIP_TRACKS.find((t) => t.id === trackId) || CHAMPIONSHIP_TRACKS[0];
+    this.id = def.id;
+    this.name = def.name;
+    this.fullName = def.fullName;
+    this.minimapTitle = def.minimapTitle;
+    this.theme = def.theme;
+    this.colors = def.colors;
+    this.pitSide = def.pitSide ?? -1; // -1 = esquerda, +1 = direita
+    this.lengthMeters = def.lengthMeters || 4309;
+    this.brakingPercentages = def.brakingPercentages || [0.16, 0.45, 0.72, 0.88];
+
+    this.segments = [];
+    this.mapPoints = [];
+
+    if (def.points) {
+      this.buildFromPoints(
+        def.points,
+        def.heights || [],
+        def.tunnelPercent || null,
+        this.lengthMeters,
+        def.overpassPercent ?? null,
+        def.viaductPercent ?? null
+      );
+    }
+
     this.buildPitLane();
     this.populateScenery();
   }
 
-  addSection(enter, hold, leave, curve, yEnd) {
-    const startY = this.lastY();
-    const endY = startY + yEnd;
-    const total = enter + hold + leave;
+  buildFromPoints(
+    rawPoints,
+    heights = [],
+    tunnelPercent = null,
+    lengthMeters = 4309,
+    overpassPercent = null,
+    viaductPercent = null
+  ) {
+    const n = rawPoints.length;
+    // Calibrado para 360 km/h: ~1:20 em Monza, ~1:10 em Mônaco/Interlagos, ~1:25 em Silverstone
+    const totalSegments = Math.round(lengthMeters * 1.0);
 
-    for (let n = 0; n < enter; n++) {
-      this.addSegment(this.easeIn(0, curve, n / enter), this.easeInOut(startY, endY, n / total));
+    const cumLen = [0];
+    for (let i = 0; i < n; i++) {
+      const p0 = rawPoints[i];
+      const p1 = rawPoints[(i + 1) % n];
+      cumLen.push(cumLen[i] + Math.hypot(p1[0] - p0[0], p1[1] - p0[1]));
     }
-    for (let n = 0; n < hold; n++) {
-      this.addSegment(curve, this.easeInOut(startY, endY, (enter + n) / total));
+    const perimeter = cumLen[n];
+
+    const linear = [];
+    for (let s = 0; s < totalSegments; s++) {
+      const targetDist = (s / totalSegments) * perimeter;
+      let segIdx = 0;
+      while (segIdx < n - 1 && cumLen[segIdx + 1] < targetDist) {
+        segIdx++;
+      }
+      const span = Math.max(0.0001, cumLen[segIdx + 1] - cumLen[segIdx]);
+      const t = (targetDist - cumLen[segIdx]) / span;
+
+      const p0 = rawPoints[segIdx];
+      const p1 = rawPoints[(segIdx + 1) % n];
+      linear.push({
+        x: p0[0] + (p1[0] - p0[0]) * t,
+        y: p0[1] + (p1[1] - p0[1]) * t
+      });
     }
-    for (let n = 0; n < leave; n++) {
-      this.addSegment(this.easeInOut(curve, 0, n / leave), this.easeInOut(startY, endY, (enter + hold + n) / total));
+
+    const smoothRadius = Math.max(4, Math.round(totalSegments / 380));
+    const dense = [];
+    for (let i = 0; i < totalSegments; i++) {
+      let sx = 0;
+      let sy = 0;
+      let count = 0;
+      for (let k = -smoothRadius; k <= smoothRadius; k++) {
+        const pt = linear[(i + k + totalSegments) % totalSegments];
+        sx += pt.x;
+        sy += pt.y;
+        count++;
+      }
+      dense.push({ x: sx / count, y: sy / count });
+    }
+
+    this.mapPoints = dense;
+
+    const headings = [];
+    for (let i = 0; i < totalSegments; i++) {
+      const a = dense[i];
+      const b = dense[(i + 1) % totalSegments];
+      headings.push(Math.atan2(b.y - a.y, b.x - a.x));
+    }
+
+    const getElevationAt = (pct) => {
+      if (!heights.length) return 0;
+      const scaled = pct * heights.length;
+      const idx = Math.floor(scaled) % heights.length;
+      const next = (idx + 1) % heights.length;
+      const frac = scaled - Math.floor(scaled);
+      return this.easeInOut(heights[idx], heights[next], frac);
+    };
+
+    const curveGain = (totalSegments / 800) * 44;
+
+    for (let i = 0; i < totalSegments; i++) {
+      const hPrev = headings[(i - 1 + totalSegments) % totalSegments];
+      const hCurr = headings[i];
+      let dAngle = hCurr - hPrev;
+      while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+      while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+
+      const curve = Math.max(-5.2, Math.min(5.2, dAngle * curveGain));
+      const pct = i / totalSegments;
+      const yNext = getElevationAt((i + 1) / totalSegments);
+      const isTunnel = Boolean(
+        tunnelPercent && pct >= tunnelPercent[0] && pct <= tunnelPercent[1]
+      );
+      const isOverpassBridge = Boolean(
+        overpassPercent !== null && Math.abs(pct - overpassPercent) < 0.004
+      );
+      const isViaduct = Boolean(
+        viaductPercent && pct >= viaductPercent[0] && pct <= viaductPercent[1]
+      );
+
+      this.addSegment(curve, yNext, isTunnel, isOverpassBridge, isViaduct);
     }
   }
 
-  addSegment(curve, y) {
+  addSegment(curve, y, isTunnel = false, isOverpassBridge = false, isViaduct = false) {
     const index = this.segments.length;
-    const isStartLine = index < 4;
+    const isStartLine = index < 5;
     const color = isStartLine
-      ? COLORS.START
-      : (Math.floor(index / 3) % 2 === 0 ? COLORS.LIGHT : COLORS.DARK);
+      ? this.colors.start
+      : (Math.floor(index / 3) % 2 === 0 ? this.colors.light : this.colors.dark);
 
     this.segments.push({
       index,
@@ -45,7 +150,11 @@ export class Track {
       color,
       sprites: [],
       hasPit: false,
-      isPitBox: false
+      pitSide: this.pitSide,
+      isPitBox: false,
+      isTunnel,
+      isOverpassBridge,
+      isViaduct
     });
   }
 
@@ -55,65 +164,140 @@ export class Track {
     }
   }
 
-  // Configura o Pit Lane de Interlagos (lado esquerdo da Reta Principal)
   buildPitLane() {
     const total = this.segments.length;
+    const side = this.pitSide; // -1 esquerda, +1 direita
 
-    // Placa avisando a entrada do Pit Lane na Curva do Café
-    this.addSprite(total - 55, 'pitSign', -1.4);
+    // Placa azul PIT bem antes da entrada para dar tempo de frear
+    this.addSprite(total - 140, 'pitSign', 1.45 * side);
 
-    // Entrada do Pit Lane nos últimos 45 segmentos (Curva do Café / Subida)
-    for (let i = total - 45; i < total; i++) {
+    // Entrada longa do Pit Lane antes da linha de chegada (110 segmentos)
+    for (let i = total - 110; i < total; i++) {
       this.segments[i].hasPit = true;
+      this.segments[i].pitSide = side;
     }
 
-    // Reta dos Boxes nos primeiros 110 segmentos da pista
-    for (let i = 0; i < 110; i++) {
+    // Reta completa dos boxes após a linha de chegada (220 segmentos)
+    for (let i = 0; i < 220; i++) {
       this.segments[i].hasPit = true;
-      if (i % 8 === 0) {
-        this.addSprite(i, 'pitGarage', -2.45);
+      this.segments[i].pitSide = side;
+      if (i % 12 === 0) {
+        this.addSprite(i, 'pitGarage', 3.05 * side);
       }
     }
 
-    // Área amarela do seu Box para parada (segmentos 45 a 55)
-    for (let i = 45; i <= 55; i++) {
+    // Área amarela de parada do Pit Stop mais longa (30 segmentos)
+    for (let i = 85; i <= 115; i++) {
       this.segments[i].isPitBox = true;
     }
   }
 
+  addBrakingBoards(cornerStartSegment, side) {
+    this.addSprite(cornerStartSegment - 27, 'board150', side);
+    this.addSprite(cornerStartSegment - 18, 'board100', side);
+    this.addSprite(cornerStartSegment - 9,  'board50',  side);
+  }
+
   populateScenery() {
-    // Torres na linha de largada
-    this.addSprite(2, 'banner', -1.35);
-    this.addSprite(2, 'banner', 1.35);
+    const total = this.segments.length;
+    const pitSide = this.pitSide ?? -1;
+    const oppositePitSide = -pitSide;
+    const grandstandZones = new Set();
 
-    for (let i = 10; i < this.segments.length - 10; i++) {
+    const placeGrandstand = (segIdx, side) => {
+      const idx = (segIdx + total) % total;
+      const seg = this.segments[idx];
+      if (!seg || seg.isTunnel || seg.isOverpassBridge) return;
+      if (seg.hasPit && Math.sign(side) === seg.pitSide) return;
+      this.addSprite(idx, 'grandstand', side);
+      for (let pad = -4; pad <= 4; pad++) {
+        grandstandZones.add(`${(idx + pad + total) % total}_${Math.sign(side)}`);
+      }
+    };
+
+    // Pórtico de Largada/Chegada cruzando por cima da pista
+    this.addSprite(3, 'overheadGantry', 0);
+
+    // Torre de cronometragem perto da largada (do lado oposto aos boxes)
+    this.addSprite(18, 'timingTower', 1.45 * oppositePitSide);
+
+    // Arquibancadas lotadas na reta principal inteira (lado oposto aos boxes)
+    for (let i = 8; i < 240; i += 8) {
+      placeGrandstand(i, 1.48 * oppositePitSide);
+    }
+    for (let i = total - 120; i < total - 10; i += 8) {
+      placeGrandstand(i, 1.48 * oppositePitSide);
+    }
+
+    // Arquibancadas nas curvas principais da pista (lado de fora da curva)
+    for (const pct of this.brakingPercentages) {
+      const cornerSeg = Math.floor(total * pct);
+      for (let k = -16; k <= 24; k += 8) {
+        const idx = (cornerSeg + k + total) % total;
+        const seg = this.segments[idx];
+        const outSide = (seg && seg.curve >= 0) ? -1.48 : 1.48;
+        placeGrandstand(idx, outSide);
+      }
+    }
+
+    // Pórticos de patrocínio espalhados pelas grandes retas da pista
+    const gantryPositions = [0.22, 0.55, 0.84];
+    for (const pct of gantryPositions) {
+      const segIdx = Math.floor(total * pct);
+      const seg = this.segments[segIdx];
+      if (seg && !seg.isTunnel && !seg.isOverpassBridge) {
+        this.addSprite(segIdx, 'overheadGantry', 0);
+      }
+    }
+
+    // Placas de frenagem (150m, 100m, 50m)
+    for (const pct of this.brakingPercentages) {
+      const cornerSeg = Math.floor(total * pct);
+      const seg = this.segments[cornerSeg];
+      const side = (seg && seg.curve < 0) ? 1.38 : -1.38;
+      if (!(seg && seg.hasPit && Math.sign(side) === seg.pitSide)) {
+        this.addBrakingBoards(cornerSeg, side);
+      }
+    }
+
+    const isUrban = this.theme === 'monaco';
+
+    for (let i = 8; i < total - 8; i++) {
       const seg = this.segments[i];
+      if (seg.isTunnel) continue;
 
-      // Placas de aviso de curva nas freadas fortes
-      if (Math.abs(seg.curve) > 2.2 && i % 10 === 0) {
+      // Placas amarelas de curva acentuada
+      if (Math.abs(seg.curve) > 2.5 && i % 9 === 0) {
         const side = seg.curve > 0 ? -1.4 : 1.4;
-        // Evita colocar placa em cima do corredor do Pit Lane
-        if (!(seg.hasPit && side < 0)) {
+        if (!(seg.hasPit && Math.sign(side) === seg.pitSide)) {
           const signType = seg.curve > 0 ? 'signRight' : 'signLeft';
           this.addSprite(i, signType, side);
         }
       }
 
-      // Árvores na esquerda (apenas fora da área do Pit Lane)
-      if (i % 7 === 0 && !seg.hasPit) {
-        this.addSprite(i, 'tree', -1.7 - Math.random() * 1.4);
-      }
+      const hasStandLeft  = grandstandZones.has(`${i}_-1`);
+      const hasStandRight = grandstandZones.has(`${i}_1`);
 
-      // Árvores na direita
-      if (i % 9 === 0) {
-        this.addSprite(i, 'tree', 1.7 + Math.random() * 1.4);
-      }
-
-      // Arbustos
-      if (i % 16 === 0) {
-        const side = i % 2 === 0 ? -1.45 : 1.45;
-        if (!(seg.hasPit && side < 0)) {
-          this.addSprite(i, 'bush', side);
+      if (isUrban) {
+        if (i % 6 === 0 && !(seg.hasPit && seg.pitSide < 0) && !hasStandLeft) {
+          this.addSprite(i, 'cityBuilding', -1.85);
+        }
+        if (i % 6 === 3 && !(seg.hasPit && seg.pitSide > 0) && !hasStandRight) {
+          this.addSprite(i, 'cityBuilding', 1.85);
+        }
+      } else {
+        if (i % 8 === 0 && !(seg.hasPit && seg.pitSide < 0) && !hasStandLeft) {
+          this.addSprite(i, 'tree', -1.75 - Math.random() * 1.4);
+        }
+        if (i % 10 === 0 && !(seg.hasPit && seg.pitSide > 0) && !hasStandRight) {
+          this.addSprite(i, 'tree', 1.75 + Math.random() * 1.4);
+        }
+        if (i % 18 === 0) {
+          const side = i % 2 === 0 ? -1.45 : 1.45;
+          const hasStandSide = grandstandZones.has(`${i}_${Math.sign(side)}`);
+          if (!(seg.hasPit && Math.sign(side) === seg.pitSide) && !hasStandSide) {
+            this.addSprite(i, 'bush', side);
+          }
         }
       }
     }
@@ -123,65 +307,12 @@ export class Track {
     return this.segments.length === 0 ? 0 : this.segments[this.segments.length - 1].p2.y;
   }
 
-  easeIn(a, b, percent) {
-    return a + (b - a) * Math.pow(percent, 2);
-  }
-
   easeInOut(a, b, percent) {
     return a + (b - a) * ((-Math.cos(percent * Math.PI) / 2) + 0.5);
   }
 
-  // Traçado de Interlagos (4.309m e 40m de variação de altitude)
-  buildInterlagos() {
-    this.segments = [];
-
-    // 1. Reta Principal (+4m)
-    this.addSection(0, 115, 0, 0.0, 1400);
-
-    // 2. S do Senna (-22m)
-    this.addSection(8, 22, 8, -4.2, -5200);
-    this.addSection(8, 22, 8,  4.2, -2500);
-
-    // 3. Curva do Sol (-18m)
-    this.addSection(12, 46, 12, -2.35, -6300);
-
-    // 4. Reta Oposta (+8m)
-    this.addSection(0, 135, 0, 0.0, 2800);
-
-    // 5. Descida do Lago (-7m)
-    this.addSection(10, 34, 10, -2.85, -2450);
-
-    // 6. Reta até a Ferradura (+5m)
-    this.addSection(0, 48, 0, 0.0, 1750);
-
-    // 7. Ferradura (+5m)
-    this.addSection(10, 32, 10, 2.3, 1750);
-
-    // 8. Laranjinha (-2m)
-    this.addSection(8, 22, 8, 2.7, -700);
-
-    // 9. Pinheirinho (-3m)
-    this.addSection(8, 26, 8, -3.9, -1050);
-
-    // 10. Bico de Pato (+2m)
-    this.addSection(8, 34, 8, 4.1, 700);
-
-    // 11. Mergulho (-9m)
-    this.addSection(10, 22, 10, -2.5, -3150);
-
-    // 12. Junção (+3m)
-    this.addSection(10, 30, 10, -3.4, 1050);
-
-    // 13. Subida dos Boxes / Curva do Café (+34m)
-    this.addSection(12, 65, 12, -1.15, 11900);
-  }
-
   get totalLength() {
     return this.segments.length * CONFIG.SEGMENT_LENGTH;
-  }
-
-  getMeters(z) {
-    return Math.round((z / this.totalLength) * 4309);
   }
 
   findSegment(z) {

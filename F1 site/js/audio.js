@@ -2,114 +2,141 @@ export class AudioEngine {
   constructor() {
     this.ctx = null;
     this.engineOsc = null;
-    this.engineFilter = null;
     this.engineGain = null;
-    this.offroadGain = null;
-    this.isStarted = false;
     this.isMuted = false;
+    this.started = false;
   }
 
-  // Navegadores exigem uma ação do usuário (tecla ou clique) para liberar o áudio
   start() {
-    if (this.isStarted) return;
+    if (this.started) {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume();
+      }
+      return;
+    }
 
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    this.ctx = new AudioContext();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
 
-    // --- 1. CANAL DO MOTOR (Onda Dente-de-Serra estilo 16-bit) ---
+    this.ctx = new AudioCtx();
     this.engineOsc = this.ctx.createOscillator();
-    this.engineOsc.type = 'sawtooth';
-    this.engineOsc.frequency.value = 45; // Marcha lenta (Hz)
-
-    // Filtro passa-baixa para tirar o agudo estridente e dar corpo ao ronco
-    this.engineFilter = this.ctx.createBiquadFilter();
-    this.engineFilter.type = 'lowpass';
-    this.engineFilter.frequency.value = 220;
-
     this.engineGain = this.ctx.createGain();
-    this.engineGain.gain.value = 0.14;
 
-    this.engineOsc.connect(this.engineFilter);
-    this.engineFilter.connect(this.engineGain);
+    this.engineOsc.type = 'sawtooth';
+    this.engineOsc.frequency.value = 55;
+    this.engineGain.gain.value = 0.04;
+
+    this.engineOsc.connect(this.engineGain);
     this.engineGain.connect(this.ctx.destination);
     this.engineOsc.start();
 
-    // --- 2. CANAL DE TERRA/GRAMA (Ruído Branco para quando sai da pista) ---
-    this.setupOffroadNoise();
-
-    this.isStarted = true;
+    this.started = true;
   }
 
-  setupOffroadNoise() {
-    const bufferSize = this.ctx.sampleRate * 1.5;
-    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const data = buffer.getChannelData(0);
+  toggleMute() {
+    this.isMuted = !this.isMuted;
+    if (this.engineGain) {
+      this.engineGain.gain.value = this.isMuted ? 0 : 0.04;
+    }
+  }
 
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
+  update(player, inMenu = false) {
+    if (!this.started || !this.ctx || !this.engineOsc) return;
+
+    if (this.isMuted || inMenu) {
+      this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.05);
+      return;
     }
 
-    const noise = this.ctx.createBufferSource();
-    noise.buffer = buffer;
-    noise.loop = true;
+    const baseFreq = 52 + player.rpmRatio * 145 + (player.gear - 1) * 14;
+    this.engineOsc.frequency.setTargetAtTime(baseFreq, this.ctx.currentTime, 0.04);
 
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 650;
-
-    this.offroadGain = this.ctx.createGain();
-    this.offroadGain.gain.value = 0; // Começa mudo
-
-    noise.connect(filter);
-    filter.connect(this.offroadGain);
-    this.offroadGain.connect(this.ctx.destination);
-    noise.start();
+    const targetVol = player.speed > 0 || player.isAccelerating ? 0.065 : 0.025;
+    this.engineGain.gain.setTargetAtTime(targetVol, this.ctx.currentTime, 0.05);
   }
 
-  // Atualiza frequência e volume a cada frame
-  update(player) {
-    if (!this.isStarted || this.isMuted) return;
+  // Bipes das luzes vermelhas (false) e tom agudo de largada (true)
+  playStartBeep(isGo = false) {
+    if (!this.started || !this.ctx || this.isMuted) return;
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(isGo ? 880 : 440, this.ctx.currentTime);
+
+    const duration = isGo ? 0.45 : 0.16;
+    gain.gain.setValueAtTime(0.14, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + duration + 0.02);
+  }
+
+  // Som de chave pneumática no Pit Stop
+  playPitDrill() {
+    if (!this.started || !this.ctx || this.isMuted) return;
 
     const now = this.ctx.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(320 + i * 40, now + i * 0.28);
+      osc.frequency.linearRampToValueAtTime(520, now + i * 0.28 + 0.16);
 
-    // Frequência sobe de 45Hz (parado) até 210Hz (giro máximo da marcha)
-    const targetFreq = 45 + (player.rpmRatio * 165);
-    this.engineOsc.frequency.setTargetAtTime(targetFreq, now, 0.04);
+      gain.gain.setValueAtTime(0.12, now + i * 0.28);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.28 + 0.18);
 
-    // Abre o filtro quando acelera para o som ficar mais encorpado
-    const targetFilter = player.isAccelerating
-      ? 240 + (player.rpmRatio * 480)
-      : 160;
-    this.engineFilter.frequency.setTargetAtTime(targetFilter, now, 0.05);
-
-    // Ativa som de derrapagem na grama se sair da pista em movimento
-    const isOffroad = Math.abs(player.x) > 1.05 && player.speed > 500;
-    const targetOffroadVol = isOffroad ? 0.12 : 0;
-    this.offroadGain.gain.setTargetAtTime(targetOffroadVol, now, 0.05);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now + i * 0.28);
+      osc.stop(now + i * 0.28 + 0.2);
+    }
   }
 
-  // Alterna mudo (útil para ligar na tecla M)
-  toggleMute() {
-    if (!this.isStarted) return;
-    this.isMuted = !this.isMuted;
-    this.engineGain.gain.value = this.isMuted ? 0 : 0.14;
-    if (this.isMuted) this.offroadGain.gain.value = 0;
-  }
-
+  // Baque de colisão
   playCrash() {
-  if (!this.ctx || this.isMuted) return;
-  const osc = this.ctx.createOscillator();
-  const gain = this.ctx.createGain();
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(110, this.ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(32, this.ctx.currentTime + 0.22);
+    if (!this.started || !this.ctx || this.isMuted) return;
 
-  gain.gain.setValueAtTime(0.28, this.ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.22);
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(115, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(30, this.ctx.currentTime + 0.24);
 
-  osc.connect(gain);
-  gain.connect(this.ctx.destination);
-  osc.start();
-  osc.stop(this.ctx.currentTime + 0.23);
-}
+    gain.gain.setValueAtTime(0.25, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.24);
+
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.25);
+  }
+
+  // Fanfarra 16-bits na linha de chegada
+  playVictoryFanfare() {
+    if (!this.started || !this.ctx || this.isMuted) return;
+
+    const notes = [523.25, 659.25, 783.99, 1046.50, 783.99, 1046.50];
+    const times = [0, 0.14, 0.28, 0.42, 0.62, 0.78];
+    const durs  = [0.12, 0.12, 0.12, 0.18, 0.14, 0.45];
+    const now = this.ctx.currentTime;
+
+    notes.forEach((freq, idx) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(freq, now + times[idx]);
+
+      gain.gain.setValueAtTime(0.14, now + times[idx]);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + times[idx] + durs[idx]);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now + times[idx]);
+      osc.stop(now + times[idx] + durs[idx] + 0.02);
+    });
+  }
 }

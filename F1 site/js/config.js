@@ -11,13 +11,14 @@ export const CONFIG = {
   DRAW_DISTANCE: 220,    // Quantos segmentos desenhar à frente
 
   // Física e dirigibilidade do carro
-  MAX_SPEED: 12000,
-  ACCEL: 6000,
-  BRAKING: 10000,
+  MAX_SPEED: 14500,
+  MAX_KMH: 360,
+  ACCEL: 5800,
+  BRAKING: -14000,
   DECEL: 4000,           // Desaceleração natural ao soltar o acelerador
   OFFROAD_DECEL: 9000,   // Desaceleração ao sair do asfalto (grama)
   OFFROAD_LIMIT: 4500,   // Velocidade máxima permitida na grama
   STEER_SPEED: 1.8,      // Sensibilidade da direção
   CENTRIFUGAL: 0.6,      // Força que joga o carro para fora nas curvas
-  TOTAL_GEARS: 5
+  TOTAL_GEARS: 7
 };

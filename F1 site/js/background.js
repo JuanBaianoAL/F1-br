@@ -2,103 +2,146 @@ import { CONFIG } from './config.js';
 
 export class Background {
   constructor() {
-    this.width = CONFIG.WIDTH;
-    this.height = CONFIG.HEIGHT;
     this.skyOffset = 0;
-    this.farMountainOffset = 0;
-    this.nearMountainOffset = 0;
-
-    // Pré-renderiza as duas camadas de montanhas para rodar a 60 FPS sem pesar
-    this.farMountains = this.createMountainLayer('#3a407a', 0.48, 95, 1.0);
-    this.nearMountains = this.createMountainLayer('#22264c', 0.52, 70, 1.4);
+    this.hillOffset = 0;
+    this.treeOffset = 0;
+    this.theme = 'interlagos';
   }
 
-  // Cria uma silhueta de montanhas com loop perfeito (início e fim na mesma altura)
-  createMountainLayer(color, horizonRatio, maxPeak, frequency) {
-    const offscreen = document.createElement('canvas');
-    offscreen.width = this.width;
-    offscreen.height = this.height;
-    const octx = offscreen.getContext('2d');
-
-    const horizonY = Math.floor(this.height * horizonRatio);
-    const step = 16; // Blocos de 16px para dar degraus estilo 16-bit
-
-    octx.fillStyle = color;
-    octx.beginPath();
-    octx.moveTo(0, this.height);
-
-    for (let x = 0; x <= this.width; x += step) {
-      const angle = (x / this.width) * Math.PI * 2 * frequency;
-      // Combina duas ondas senoidais para picos irregulares naturais
-      const wave = Math.sin(angle) * 0.65 + Math.sin(angle * 2.3 + 1.2) * 0.35;
-      const peakHeight = Math.abs(wave) * maxPeak;
-      const y = Math.round((horizonY - peakHeight) / 4) * 4;
-
-      octx.lineTo(x, y);
-    }
-
-    octx.lineTo(this.width, this.height);
-    octx.closePath();
-    octx.fill();
-
-    return offscreen;
+  setTheme(theme) {
+    this.theme = theme || 'interlagos';
   }
 
-  // Atualiza deslocamento horizontal baseado na curva atual e velocidade
   update(dt, track, player) {
-    const currentSegment = track.findSegment(player.position);
+    const segment = track.findSegment(player.position);
     const speedRatio = player.speed / CONFIG.MAX_SPEED;
-    const turnDelta = currentSegment.curve * speedRatio * dt;
 
-    // Nuvens têm brisa própria (+8 px/s) + reação suave às curvas
-    this.skyOffset = (this.skyOffset + 8 * dt + turnDelta * 20) % this.width;
-    this.farMountainOffset = (this.farMountainOffset + turnDelta * 45) % this.width;
-    this.nearMountainOffset = (this.nearMountainOffset + turnDelta * 85) % this.width;
-
-    // Mantém valores positivos para funcionar em curvas à esquerda e à direita
-    if (this.skyOffset < 0) this.skyOffset += this.width;
-    if (this.farMountainOffset < 0) this.farMountainOffset += this.width;
-    if (this.nearMountainOffset < 0) this.nearMountainOffset += this.width;
+    this.skyOffset = (this.skyOffset + segment.curve * speedRatio * dt * 15) % CONFIG.WIDTH;
+    this.hillOffset = (this.hillOffset + segment.curve * speedRatio * dt * 45) % CONFIG.WIDTH;
+    this.treeOffset = (this.treeOffset + segment.curve * speedRatio * dt * 95) % CONFIG.WIDTH;
   }
 
   render(ctx) {
-    // 1. Céu em degradê (estilo entardecer Top Gear)
-    const skyGrad = ctx.createLinearGradient(0, 0, 0, this.height * 0.6);
-    skyGrad.addColorStop(0, '#18225c');
-    skyGrad.addColorStop(0.55, '#4c6ec9');
-    skyGrad.addColorStop(1, '#f4a261');
+    const horizon = CONFIG.HEIGHT / 2;
+
+    if (this.theme === 'monaco') {
+      this.renderMonacoBackground(ctx, horizon);
+      return;
+    }
+
+    // Céu em gradiente retrô (Interlagos, Monza, Silverstone)
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, horizon);
+    if (this.theme === 'silverstone') {
+      skyGrad.addColorStop(0, '#365880');
+      skyGrad.addColorStop(1, '#8faec9');
+    } else {
+      skyGrad.addColorStop(0, '#1e4fa3');
+      skyGrad.addColorStop(1, '#68a4f1');
+    }
     ctx.fillStyle = skyGrad;
-    ctx.fillRect(0, 0, this.width, this.height);
+    ctx.fillRect(0, 0, CONFIG.WIDTH, horizon);
 
-    // 2. Nuvens em loop
-    const skyX = -Math.floor(this.skyOffset);
-    this.drawClouds(ctx, skyX);
-    this.drawClouds(ctx, skyX + this.width);
+    // Nuvens em blocos 16-bits
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+    for (let i = -1; i <= 2; i++) {
+      const baseX = i * 480 - this.skyOffset;
+      ctx.fillRect(baseX + 80, 48, 95, 16);
+      ctx.fillRect(baseX + 100, 36, 55, 14);
+      ctx.fillRect(baseX + 310, 68, 120, 14);
+      ctx.fillRect(baseX + 335, 56, 65, 14);
+    }
 
-    // 3. Montanhas distantes (mais claras e lentas)
-    const farX = -Math.floor(this.farMountainOffset);
-    ctx.drawImage(this.farMountains, farX, 0);
-    ctx.drawImage(this.farMountains, farX + this.width, 0);
+    // Montanhas / Arquibancadas ao fundo
+    ctx.fillStyle = this.theme === 'park' ? '#244d36' : '#2d3b55';
+    for (let i = -1; i <= 2; i++) {
+      const baseX = i * 480 - this.hillOffset;
+      ctx.beginPath();
+      ctx.moveTo(baseX, horizon);
+      ctx.lineTo(baseX + 120, horizon - 82);
+      ctx.lineTo(baseX + 260, horizon - 38);
+      ctx.lineTo(baseX + 390, horizon - 95);
+      ctx.lineTo(baseX + 480, horizon);
+      ctx.closePath();
+      ctx.fill();
+    }
 
-    // 4. Montanhas próximas (mais escuras e rápidas)
-    const nearX = -Math.floor(this.nearMountainOffset);
-    ctx.drawImage(this.nearMountains, nearX, 0);
-    ctx.drawImage(this.nearMountains, nearX + this.width, 0);
+    // Silhueta distante
+    ctx.fillStyle = this.theme === 'park' ? '#134f21' : '#1b2838';
+    for (let i = -1; i <= 2; i++) {
+      const baseX = i * 480 - this.treeOffset;
+      ctx.fillRect(baseX, horizon - 18, 480, 18);
+      ctx.fillRect(baseX + 40, horizon - 30, 70, 14);
+      ctx.fillRect(baseX + 220, horizon - 26, 110, 10);
+      ctx.fillRect(baseX + 370, horizon - 32, 60, 16);
+    }
   }
 
-  drawClouds(ctx, offsetX) {
-    ctx.fillStyle = 'rgba(255, 245, 235, 0.75)';
+  renderMonacoBackground(ctx, horizon) {
+    // 1. Céu ensolarado da Riviera Francesa
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, horizon);
+    skyGrad.addColorStop(0, '#1366c2');
+    skyGrad.addColorStop(1, '#79c2ff');
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0, 0, CONFIG.WIDTH, horizon);
 
-    // Nuvem 1
-    ctx.fillRect(offsetX + 70, 42, 76, 12);
-    ctx.fillRect(offsetX + 86, 34, 44, 8);
+    // 2. Rocha de Monte Carlo (Tête de Chien) ao fundo
+    ctx.fillStyle = '#5c6b7a';
+    for (let i = -1; i <= 2; i++) {
+      const baseX = i * 480 - this.hillOffset;
+      ctx.beginPath();
+      ctx.moveTo(baseX, horizon);
+      ctx.lineTo(baseX + 90, horizon - 125);
+      ctx.lineTo(baseX + 240, horizon - 110);
+      ctx.lineTo(baseX + 380, horizon - 135);
+      ctx.lineTo(baseX + 480, horizon);
+      ctx.closePath();
+      ctx.fill();
+    }
 
-    // Nuvem 2
-    ctx.fillRect(offsetX + 290, 64, 96, 14);
-    ctx.fillRect(offsetX + 312, 54, 52, 10);
+    // 3. Prédios da Vila de Mônaco escalonados na encosta
+    const buildings = [
+      { dx: 18, w: 46, h: 72, color: '#f2d9b1' },
+      { dx: 70, w: 54, h: 88, color: '#e8a87c' },
+      { dx: 132, w: 44, h: 64, color: '#f7efe2' },
+      { dx: 184, w: 62, h: 94, color: '#d98a6c' },
+      { dx: 254, w: 48, h: 76, color: '#f2e2c4' },
+      { dx: 310, w: 58, h: 84, color: '#e6b88a' },
+      { dx: 376, w: 46, h: 68, color: '#ffffff' },
+      { dx: 428, w: 44, h: 78, color: '#deb887' }
+    ];
 
-    // Nuvem 3
-    ctx.fillRect(offsetX + 510, 36, 64, 10);
-    ctx.fillRect(offsetX + 522, 28, 36, 8);
+    for (let i = -1; i <= 2; i++) {
+      const baseX = i * 480 - this.treeOffset;
+
+      for (const b of buildings) {
+        const bx = baseX + b.dx;
+        const by = horizon - 14 - b.h;
+        ctx.fillStyle = b.color;
+        ctx.fillRect(bx, by, b.w, b.h);
+
+        // Telhado terracota
+        ctx.fillStyle = '#a8382b';
+        ctx.fillRect(bx - 2, by - 4, b.w + 4, 5);
+
+        // Janelas em pixel art
+        ctx.fillStyle = '#2d4259';
+        for (let wy = by + 8; wy < horizon - 22; wy += 12) {
+          for (let wx = bx + 6; wx < bx + b.w - 8; wx += 10) {
+            ctx.fillRect(wx, wy, 5, 7);
+          }
+        }
+      }
+
+      // 4. Mar Mediterrâneo & Iates na base da vila
+      ctx.fillStyle = '#0088cc';
+      ctx.fillRect(baseX, horizon - 14, 480, 14);
+
+      // Iates brancos ancorados na marina
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(baseX + 55, horizon - 13, 28, 5);
+      ctx.fillRect(baseX + 62, horizon - 17, 14, 4);
+      ctx.fillRect(baseX + 290, horizon - 13, 34, 5);
+      ctx.fillRect(baseX + 300, horizon - 18, 16, 5);
+    }
   }
 }

@@ -1,106 +1,87 @@
 export class Minimap {
   constructor(track) {
+    this.x = 16;
+    this.y = 16;
+    this.size = 112;
     this.points = [];
-    this.bounds = { minX: 0, maxX: 0, minY: 0, maxY: 0 };
-    this.buildMap(track);
+    this.buildPoints(track);
   }
 
-  buildMap(track) {
-    let x = 0;
-    let y = 0;
-    let angle = -Math.PI * 0.72;
-    const rawPoints = [];
+  buildPoints(track) {
+    const raw = track.mapPoints && track.mapPoints.length > 0
+      ? track.mapPoints
+      : [{ x: 0, y: 0 }];
 
-    for (let i = 0; i < track.segments.length; i++) {
-      const seg = track.segments[i];
-      angle += seg.curve * 0.0158;
-      x += Math.cos(angle) * 2;
-      y += Math.sin(angle) * 2;
-      rawPoints.push({ x, y });
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    for (const p of raw) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
     }
 
-    const endPoint = rawPoints[rawPoints.length - 1];
-    const total = rawPoints.length;
+    const span = Math.max(maxX - minX, maxY - minY) || 1;
+    const pad = 16;
+    const drawArea = this.size - pad * 2;
+    const offsetX = (drawArea - (maxX - minX) * (drawArea / span)) / 2;
+    const offsetY = (drawArea - (maxY - minY) * (drawArea / span)) / 2;
 
-    for (let i = 0; i < total; i++) {
-      const progress = i / (total - 1);
-      const closedX = rawPoints[i].x - endPoint.x * progress;
-      const closedY = rawPoints[i].y - endPoint.y * progress;
-
-      this.points.push({ x: closedX, y: closedY });
-
-      if (closedX < this.bounds.minX) this.bounds.minX = closedX;
-      if (closedX > this.bounds.maxX) this.bounds.maxX = closedX;
-      if (closedY < this.bounds.minY) this.bounds.minY = closedY;
-      if (closedY > this.bounds.maxY) this.bounds.maxY = closedY;
-    }
+    this.points = raw.map((p) => ({
+      x: this.x + pad + offsetX + (p.x - minX) * (drawArea / span),
+      y: this.y + pad + 6 + offsetY + (p.y - minY) * (drawArea / span)
+    }));
   }
 
   render(ctx, player, track, rivals = null) {
-    const boxX = 16;
-    const boxY = 16;
-    const boxSize = 105;
-    const padding = 14;
+    ctx.save();
 
-    ctx.fillStyle = 'rgba(15, 15, 25, 0.78)';
-    ctx.fillRect(boxX, boxY, boxSize, boxSize);
+    ctx.fillStyle = 'rgba(15, 15, 25, 0.88)';
+    ctx.fillRect(this.x, this.y, this.size, this.size);
     ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(boxX, boxY, boxSize, boxSize);
+    ctx.lineWidth = 3;
+    ctx.strokeRect(this.x, this.y, this.size, this.size);
 
     ctx.fillStyle = '#ffcc00';
     ctx.font = 'bold 8px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('INTERLAGOS 4.3KM', boxX + 6, boxY + 11);
-
-    const mapW = this.bounds.maxX - this.bounds.minX || 1;
-    const mapH = this.bounds.maxY - this.bounds.minY || 1;
-    const scale = (boxSize - padding * 2 - 8) / Math.max(mapW, mapH);
-
-    const offsetX = boxX + (boxSize - mapW * scale) / 2 - this.bounds.minX * scale;
-    const offsetY = boxY + 6 + (boxSize - mapH * scale) / 2 - this.bounds.minY * scale;
-
-    ctx.strokeStyle = '#cccccc';
-    ctx.lineWidth = 4;
+    ctx.textAlign = 'center';
+    ctx.fillText(track.minimapTitle || 'CIRCUIT', this.x + this.size / 2, this.y + 12);
+    ctx.strokeStyle = '#9999aa';
+    ctx.lineWidth = 3.5;
     ctx.beginPath();
-    for (let i = 0; i < this.points.length; i += 2) {
-      const px = this.points[i].x * scale + offsetX;
-      const py = this.points[i].y * scale + offsetY;
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
+    this.points.forEach((pt, idx) => {
+      if (idx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
     ctx.closePath();
     ctx.stroke();
 
     const startPt = this.points[0];
-    ctx.fillStyle = '#ffcc00';
-    ctx.fillRect(startPt.x * scale + offsetX - 3, startPt.y * scale + offsetY - 3, 6, 6);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(startPt.x - 3, startPt.y - 3, 6, 6);
 
-    // Pontos azuis dos adversários no minimapa
     if (rivals) {
       for (const car of rivals.cars) {
-        const rIdx = Math.floor((car.z / track.totalLength) * this.points.length) % this.points.length;
-        const rPt = this.points[rIdx];
-        if (rPt) {
-          ctx.fillStyle = '#00bfff';
-          ctx.beginPath();
-          ctx.arc(rPt.x * scale + offsetX, rPt.y * scale + offsetY, 2.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        const carSeg = track.findSegment(car.z);
+        const rPt = this.points[carSeg.index] || this.points[0];
+        ctx.fillStyle = car.color;
+        ctx.beginPath();
+        ctx.arc(rPt.x, rPt.y, 2.8, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
 
-    // Ponto vermelho do jogador
-    const currentIndex = Math.floor((player.position / track.totalLength) * this.points.length) % this.points.length;
-    const playerPt = this.points[currentIndex];
-    if (playerPt) {
-      ctx.fillStyle = '#ff2222';
-      ctx.beginPath();
-      ctx.arc(playerPt.x * scale + offsetX, playerPt.y * scale + offsetY, 4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    }
+    const currentSeg = track.findSegment(player.position);
+    const pPt = this.points[currentSeg.index] || this.points[0];
+
+    ctx.fillStyle = '#ff2222';
+    ctx.beginPath();
+    ctx.arc(pPt.x, pPt.y, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.restore();
   }
 }

@@ -3,12 +3,56 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Corrida 16-Bit - Interlagos</title>
+  <title>F1 World Championship 16-Bit</title>
   <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
   <div id="game-container">
     <canvas id="gameCanvas"></canvas>
+
+    <!-- Menu Inicial -->
+    <div id="start-menu">
+      <div class="menu-card">
+        <div class="menu-badge" id="menu-track-badge">GP DA ITÁLIA • MONZA 5.793M</div>
+        <h1>F1 CHAMPIONSHIP 16-BIT</h1>
+
+        <div class="menu-section">
+          <span class="menu-label">CIRCUITO / ETAPA DO CAMPEONATO:</span>
+          <div class="option-group" id="track-options">
+            <button class="opt-btn selected" data-track="monza">1. MONZA</button>
+            <button class="opt-btn" data-track="monaco">2. MÔNACO</button>
+            <button class="opt-btn" data-track="silverstone">3. SILVERSTONE</button>
+            <button class="opt-btn" data-track="interlagos">4. INTERLAGOS</button>
+            <button class="opt-btn" data-track="suzuka">5. SUZUKA</button>
+          </div>
+        </div>
+
+        <div class="menu-section">
+          <span class="menu-label">ESCOLHA SUA ESCUDERIA:</span>
+          <div class="option-group" id="team-options">
+            <button class="opt-btn selected" data-team="FERRARI" data-body="#d91e18" data-wing="#b01510" data-accent="#ffcc00">FERRARI</button>
+            <button class="opt-btn" data-team="MCLAREN" data-body="#f2f2f2" data-wing="#e61919" data-accent="#e61919">MCLAREN</button>
+            <button class="opt-btn" data-team="WILLIAMS" data-body="#0044cc" data-wing="#ffcc00" data-accent="#ffffff">WILLIAMS</button>
+            <button class="opt-btn" data-team="LOTUS" data-body="#181818" data-wing="#d4af37" data-accent="#d4af37">LOTUS</button>
+          </div>
+        </div>
+
+        <div class="menu-section">
+          <span class="menu-label">NÍVEL DOS ADVERSÁRIOS:</span>
+          <div class="option-group" id="diff-options">
+            <button class="opt-btn" data-diff="0.88">AMADOR</button>
+            <button class="opt-btn selected" data-diff="1.0">PROFISSIONAL</button>
+            <button class="opt-btn" data-diff="1.10">AYRTON</button>
+          </div>
+        </div>
+
+        <div class="menu-actions">
+          <button id="start-race-btn">IR PARA O GRID</button>
+          <button id="view-standings-btn" class="secondary-btn">TABELA DO CAMPEONATO</button>
+        </div>
+        <p class="controls-hint">SETAS / WASD: DIRIGIR • M: MUTAR ÁUDIO</p>
+      </div>
+    </div>
 
     <!-- Semáforo de Largada F1 -->
     <div id="start-lights" class="hidden">
@@ -19,7 +63,7 @@
       <div class="light"></div>
     </div>
 
-    <!-- HUD Superior: Posição, Voltas, Tempos e Pneus -->
+    <!-- HUD Superior -->
     <div id="top-hud">
       <div class="hud-box compact">
         <span class="label">POS</span>
@@ -49,10 +93,10 @@
       </div>
     </div>
 
-    <!-- Aviso central de Largada / Pit Limiter -->
+    <!-- Aviso Central -->
     <div id="pit-banner" class="hidden">PIT LIMITER 80 KM/H</div>
 
-    <!-- HUD Inferior: Marcha, RPM e Velocímetro -->
+    <!-- HUD Inferior -->
     <div id="hud">
       <div class="hud-box">
         <span class="label">GEAR</span>
@@ -67,22 +111,35 @@
       </div>
 
       <div class="hud-box">
+        <span class="label">SPEED</span>
         <span id="speed-display" class="value">000</span>
         <span class="label">KM/H</span>
       </div>
     </div>
 
-    <!-- Tela de Fim de Corrida -->
+    <!-- Tela de Fim de Corrida & Tabela do Campeonato -->
     <div id="finish-screen" class="hidden">
       <div class="finish-card">
-        <h2>BANDEIRADA FINAL!</h2>
-        <p class="subtitle">AUTÓDROMO DE INTERLAGOS - 3 VOLTAS</p>
-        <div class="stats">
+        <h2 id="finish-title">BANDEIRADA FINAL!</h2>
+        <p class="subtitle" id="finish-subtitle">GP DA ITÁLIA • 3 VOLTAS</p>
+
+        <div class="stats" id="race-summary-stats">
           <div>POSIÇÃO FINAL: <span id="final-pos">1º LUGAR</span></div>
           <div>TEMPO TOTAL: <span id="final-total-time">00:00.00</span></div>
           <div>MELHOR VOLTA: <span id="final-best-time">00:00.00</span></div>
         </div>
-        <button id="restart-btn">CORRER NOVAMENTE</button>
+
+        <div id="standings-panel">
+          <div class="standings-header">CLASSIFICAÇÃO MUNDIAL (ETAPAS: <span id="races-completed">0</span>/4)</div>
+          <div id="standings-list"></div>
+        </div>
+
+        <div class="finish-actions">
+          <button id="next-gp-btn">PRÓXIMO GP</button>
+          <button id="restart-btn" class="secondary-btn">REPETIR PISTA</button>
+          <button id="menu-btn" class="secondary-btn">MENU</button>
+          <button id="reset-champ-btn" class="danger-btn">ZERAR PONTOS</button>
+        </div>
       </div>
     </div>
   </div>
